@@ -18,6 +18,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "driver/i2c_master.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +63,19 @@ typedef struct veml7700_privdata_t *veml7700_handle_t;
  * @return esp_err_t 
  */
 esp_err_t veml7700_initialize(veml7700_handle_t *dev, int i2c_master_num);
+
+/**
+ * @brief Initialize the sensor by using an existing I2C bus.
+ * 
+ * @attention This function should be called only once and before any other
+ * functions from this group.
+ *
+ * @param dev Pointer to a variable holding the device handle
+ * @param i2c_bus I2C bus to be used by the master device
+ * 
+ * @return esp_err_t 
+ */
+esp_err_t veml7700_initialize_with_bus(veml7700_handle_t *dev, i2c_master_bus_handle_t i2c_bus_handle);
 
 
 /**

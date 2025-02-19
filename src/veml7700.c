@@ -21,9 +21,10 @@
 #include <string.h>
 #include <math.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "veml7700.h"
-#include "driver/i2c.h"
 
 #define VEML7700_I2C_ADDR UINT8_C(0x10) /*!< Sensor slave I2C address */
 
@@ -142,6 +143,7 @@ struct veml7700_privdata_t {
 	struct veml7700_config configuration;
 	int i2c_master_num;
 	int addr;
+	i2c_master_bus_handle_t i2c_bus_handle;	
 };
 
 //Forward declarations
@@ -156,10 +158,64 @@ static int veml7700_get_it_index(uint8_t integration_time);
 static uint8_t indexOf(uint8_t elm, const uint8_t *ar, uint8_t len);
 static void decrease_resolution(veml7700_handle_t dev);
 static void increase_resolution(veml7700_handle_t dev);
-static esp_err_t veml7700_i2c_read_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t *reg_data);
-static esp_err_t veml7700_i2c_write_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t reg_data);
+//static esp_err_t veml7700_i2c_read_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t *reg_data);
+//static esp_err_t veml7700_i2c_write_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t reg_data);
+static esp_err_t veml7700_i2c_read_reg_with_bus(veml7700_handle_t dev, uint8_t reg_addr, uint16_t *reg_data);
+static esp_err_t veml7700_i2c_write_reg_with_bus(veml7700_handle_t dev, uint8_t reg_addr, uint16_t reg_data);
 static esp_err_t veml7700_send_config(veml7700_handle_t dev);
 
+esp_err_t veml7700_initialize_with_bus(veml7700_handle_t *dev, i2c_master_bus_handle_t i2c_bus_handle) {
+	veml7700_privdata_t *rdev = calloc(1, sizeof(veml7700_privdata_t));
+	if (rdev == NULL) return ESP_ERR_NO_MEM;
+	// Define the sensor configuration globally
+	rdev->configuration = veml7700_get_default_config();
+    rdev->i2c_bus_handle = i2c_bus_handle;
+	rdev->addr = VEML7700_I2C_ADDR;
+
+	*dev = rdev;
+	return veml7700_send_config(rdev);
+}
+
+esp_err_t veml7700_i2c_write_reg_with_bus(veml7700_handle_t dev, uint8_t reg, uint16_t value) {
+	i2c_master_dev_handle_t dev_handle;
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = VEML7700_I2C_ADDR,
+        .scl_speed_hz = 400000
+    };
+
+    esp_err_t err = i2c_master_bus_add_device(dev->i2c_bus_handle, &dev_cfg, &dev_handle);
+    if (err != ESP_OK) return ESP_ERR_INVALID_ARG;
+
+    uint8_t data[3] = { reg, value & 0xFF, (value >> 8) & 0xFF };
+
+    err = i2c_master_transmit(dev_handle, data, sizeof(data), pdMS_TO_TICKS(1000));
+    i2c_master_bus_rm_device(dev_handle);
+
+	return err;
+}
+
+esp_err_t veml7700_i2c_read_reg_with_bus(veml7700_handle_t dev, uint8_t reg, uint16_t *value) {
+    if (!value) return ESP_ERR_INVALID_ARG;
+
+    i2c_master_dev_handle_t dev_handle;
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = VEML7700_I2C_ADDR,
+        .scl_speed_hz = 400000
+    };
+
+    esp_err_t err = i2c_master_bus_add_device(dev->i2c_bus_handle, &dev_cfg, &dev_handle);
+    if (err != ESP_OK) return ESP_ERR_INVALID_ARG;
+
+    uint8_t data[2];
+    err = i2c_master_transmit_receive(dev_handle, &reg, 1, data, sizeof(data), pdMS_TO_TICKS(1000));
+    *value = ((uint16_t)data[1] << 8) | data[0];
+
+    i2c_master_bus_rm_device(dev_handle);
+
+	return err;
+}
 
 /**
  * @brief Get the default sensor configuration.
@@ -408,30 +464,30 @@ static void increase_resolution(veml7700_handle_t dev)
  * 
  * @return esp_err_t 
  */
-static esp_err_t veml7700_i2c_read_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t *reg_data)
-{
-	esp_err_t espRc;
-
-	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-
-	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (dev->addr << 1) | I2C_MASTER_WRITE, true);
-	i2c_master_write_byte(cmd, reg_addr, true);
-
-	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (dev->addr << 1) | I2C_MASTER_READ, true);
-	
-	uint8_t read_data[2];
-	i2c_master_read(cmd, read_data, 2, I2C_MASTER_LAST_NACK);
-	i2c_master_stop(cmd);
-
-	espRc = i2c_master_cmd_begin(dev->i2c_master_num, cmd, 2000 / portTICK_PERIOD_MS);
-
-	*reg_data = read_data[0] | (read_data[1]<<8);
-	i2c_cmd_link_delete(cmd);
-
-	return espRc;
-}
+//static esp_err_t veml7700_i2c_read_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t *reg_data)
+//{
+//	esp_err_t espRc;
+//
+//	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+//
+//	i2c_master_start(cmd);
+//	i2c_master_write_byte(cmd, (dev->addr << 1) | I2C_MASTER_WRITE, true);
+//	i2c_master_write_byte(cmd, reg_addr, true);
+//
+//	i2c_master_start(cmd);
+//	i2c_master_write_byte(cmd, (dev->addr << 1) | I2C_MASTER_READ, true);
+//	
+//	uint8_t read_data[2];
+//	i2c_master_read(cmd, read_data, 2, I2C_MASTER_LAST_NACK);
+//	i2c_master_stop(cmd);
+//
+//	espRc = i2c_master_cmd_begin(dev->i2c_master_num, cmd, 2000 / portTICK_PERIOD_MS);
+//
+//	*reg_data = read_data[0] | (read_data[1]<<8);
+//	i2c_cmd_link_delete(cmd);
+//
+//	return espRc;
+//}
 
 /**
  * @brief I2C register write protocol implementation for VEML7700 IC.
@@ -445,33 +501,32 @@ static esp_err_t veml7700_i2c_read_reg(veml7700_handle_t dev, uint8_t reg_addr, 
  * 
  * @return esp_err_t 
  */
-static esp_err_t veml7700_i2c_write_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t reg_data)
-{
-	esp_err_t espRc;
-	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-
-	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (dev->addr << 1) | I2C_MASTER_WRITE, false);
-	i2c_master_write_byte(cmd, reg_addr, false);
-
-	uint8_t write_data[2];
-	write_data[0] = reg_data&0xff;
-	write_data[1] = (reg_data>>8)&0xff;
-	i2c_master_write(cmd, write_data, 2, false);
-	
-	i2c_master_stop(cmd);
-
-	espRc = i2c_master_cmd_begin(dev->i2c_master_num, cmd, 1000 / portTICK_PERIOD_MS);
-
-	i2c_cmd_link_delete(cmd);
-
-	return espRc;
-}
-
+//static esp_err_t veml7700_i2c_write_reg(veml7700_handle_t dev, uint8_t reg_addr, uint16_t reg_data)
+//{
+//	esp_err_t espRc;
+//	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+//
+//	i2c_master_start(cmd);
+//	i2c_master_write_byte(cmd, (dev->addr << 1) | I2C_MASTER_WRITE, false);
+//	i2c_master_write_byte(cmd, reg_addr, false);
+//
+//	uint8_t write_data[2];
+//	write_data[0] = reg_data&0xff;
+//	write_data[1] = (reg_data>>8)&0xff;
+//	i2c_master_write(cmd, write_data, 2, false);
+//	
+//	i2c_master_stop(cmd);
+//
+//	espRc = i2c_master_cmd_begin(dev->i2c_master_num, cmd, 1000 / portTICK_PERIOD_MS);
+//
+//	i2c_cmd_link_delete(cmd);
+//
+//	return espRc;
+//}
 
 esp_err_t veml7700_initialize(veml7700_handle_t *dev, int i2c_master_num)
 {
-	veml7700_privdata_t *rdev = calloc(sizeof(veml7700_privdata_t), 1);
+	veml7700_privdata_t *rdev = calloc(1, sizeof(veml7700_privdata_t));
 	if (rdev == NULL) return ESP_ERR_NO_MEM;
 	// Define the sensor configuration globally
 	rdev->configuration = veml7700_get_default_config();
@@ -502,7 +557,7 @@ static esp_err_t veml7700_send_config(veml7700_handle_t dev)
 	// Set the current maximum value on the configuration struct
 	dev->configuration.maximum_lux = veml7700_get_current_maximum_lux(dev);
 
-	return veml7700_i2c_write_reg(
+	return veml7700_i2c_write_reg_with_bus(
 		dev, 
 		VEML7700_ALS_CONFIG, 
 		config_data
@@ -520,7 +575,7 @@ esp_err_t veml7700_read_als_lux(veml7700_handle_t dev, double* lux)
 	esp_err_t i2c_result;
 	uint16_t reg_data;
 	
-	i2c_result = veml7700_i2c_read_reg(dev, VEML7700_ALS_DATA, &reg_data);
+	i2c_result = veml7700_i2c_read_reg_with_bus(dev, VEML7700_ALS_DATA, &reg_data);
 	if (i2c_result != 0) {
 		ESP_LOGW(VEML7700_TAG, "veml7700_i2c_read() returned %d", i2c_result);
 		return i2c_result;
@@ -553,7 +608,7 @@ esp_err_t veml7700_read_white_lux(veml7700_handle_t dev, double* lux)
 	esp_err_t i2c_result;
 	uint16_t reg_data;
 	
-	i2c_result = veml7700_i2c_read_reg(dev, VEML7700_WHITE_DATA, &reg_data);
+	i2c_result = veml7700_i2c_read_reg_with_bus(dev, VEML7700_WHITE_DATA, &reg_data);
 	if (i2c_result != 0) {
 		ESP_LOGW(VEML7700_TAG, "veml7700_i2c_read() returned %d", i2c_result);
 		return i2c_result;
@@ -568,7 +623,7 @@ esp_err_t veml7700_read_white_lux_auto(veml7700_handle_t dev, double* lux)
 {
 	veml7700_read_white_lux(dev, lux);
 
-	ESP_LOGD(VEML7700_TAG, "Configured maximum luminocity: %" PRIu32 "\n", dev->configuration.maximum_lux);
+	ESP_LOGD(VEML7700_TAG, "Configured maximum luminosity: %" PRIu32 "\n", dev->configuration.maximum_lux);
 	ESP_LOGD(VEML7700_TAG, "Configured resolution: %0.4f\n", dev->configuration.resolution);
 	
 	// Calculate and automatically reconfigure the optimal sensor configuration
